@@ -6,7 +6,10 @@ def structure_chunks(chunks):
         size=len(chunk)
         start=pointer
         end=pointer+size-1
-        text=" ".join(chunk)
+        if isinstance(chunk, list):
+            text = " ".join(chunk)
+        else:
+            text = chunk
         chunk_id=i
         sentences=chunk
         text=text

@@ -5,11 +5,12 @@ import numpy as np
 import faiss
 
 # your modules
-from similarity.semantic_chunk import semantic_chunk_text
+from vector_store.retrieve import retrieve
+from chunking.semantic_chunker import semantic_chunk_text
 from similarity.structure_chunks import structure_chunks
 from embeddings.generate_embeddings import generate_embeddings
-from faiss.index import build_faiss_index
-from faiss.search import search
+from vector_store.index import build_faiss_index
+
 
 app = FastAPI()
 
@@ -18,14 +19,12 @@ index = None
 chunks = None
 
 
-# ✅ FIX 1: load model at startup
+ 
 @app.on_event("startup")
 def load_model():
     global model
     model = SentenceTransformer("all-MiniLM-L6-v2")
 
-
-# ✅ FIX 2: use POST body instead of GET params
 class QueryRequest(BaseModel):
     question: str
     k: int = 3
@@ -61,13 +60,15 @@ async def query_system(req: QueryRequest):
         raise HTTPException(status_code=400, detail="Upload a document first")
 
     # clean float32 handling
-    query_vec = model.encode([req.question]).astype("float32")
+    results = retrieve(
+        query=req.question,
+        model=model,
+        index=index,
+     chunks=chunks,
+     k=req.k
+    )
 
-    D, I = index.search(query_vec, req.k)
-
-    results = []
-    for idx in I[0]:
-        if idx != -1 and idx < len(chunks):
-            results.append(chunks[idx]["text"])  
-
-    return {"query": req.question, "results": results}
+    return {
+    "query": req.question,
+    "results": [r["text"] for r in results]
+}
