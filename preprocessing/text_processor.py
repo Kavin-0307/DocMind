@@ -1,9 +1,17 @@
 import spacy
 # Load spaCy globally and avoids reloading of models which improves performance 
-nlp = spacy.load("en_core_web_md", disable=["ner"])
+_nlp = None
+def _get_nlp():
+    """Lazy-load spaCy model on first use"""
+    global _nlp
+    if _nlp is None:
+        _nlp = spacy.load("en_core_web_md", disable=["ner"])
+    return _nlp
+
 def process_text(text):
     # Process raw text into spaCy document object
     # Doc=is a structured representation
+    nlp = _get_nlp()
     doc=nlp(text)
     lemmas=[]#normalized word forms
     sents=[]#sentence level structure

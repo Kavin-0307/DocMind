@@ -1,8 +1,7 @@
 from sentence_transformers import SentenceTransformer,util
 from sklearn.metrics.pairwise import cosine_similarity
-model=SentenceTransformer('all-MiniLM-L6-v2')
 
-def semantic_chunk_text(sentences:list[str],threshold:float):
+def semantic_chunk_text(sentences:list[str],threshold:float,model):
 #Sentence transformers allow the transformation of sentences into vector spaces . They represent sentences as 
 #dense vector embeddings.The transformers analyze the words in context in both directions, before and after the current word.
     if not sentences:

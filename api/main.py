@@ -4,7 +4,6 @@ from typing import List
 from sentence_transformers import SentenceTransformer
 import numpy as np
 
-# 📥 Importing your custom modular components
 from keywords.rake_extractor import extract_keywords
 from chunking.semantic_chunker import semantic_chunk_text
 from vector_store.retrieve import retrieve
@@ -12,15 +11,11 @@ from vector_store.index import build_faiss_index
 from embeddings.generate_embeddings import generate_embeddings
 from similarity.structure_chunks import structure_chunks
 
-# Initialize App and Model
 app = FastAPI(title="DocMind AI Engine")
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
-# Global state for System 2 (Retrieval Engine)
-active_index = None
-active_chunks = None
-
-# --- DATA SCHEMAS (Synced with SOS Backend) ---
+# Per-session storage instead of global state
+indexes: dict[str, dict] = {}
 
 class AIRequest(BaseModel):
     text: str
@@ -31,11 +26,14 @@ class AIResponse(BaseModel):
     important_points: List[str]
     revision_sheet: str
 
+class IndexRequest(BaseModel):
+    text: str
+    session_id: str
+
 class QueryRequest(BaseModel):
     question: str
+    session_id: str
     k: int = 3
-
-# --- SYSTEM 1: LECTURE PROCESSING (Summarization & Material Gen) ---
 
 @app.post("/api/process", response_model=AIResponse)
 async def process_lecture(req: AIRequest):
@@ -43,18 +41,14 @@ async def process_lecture(req: AIRequest):
         raise HTTPException(status_code=400, detail="Text too short for analysis")
 
     try:
-        # 1. Keywords (System 1)
         keywords = extract_keywords(req.text, top_n=8)
 
-        # 2. Semantic Chunking (For Summary & Important Points)
         sentences = [s.strip() for s in req.text.split('.') if len(s.strip()) > 5]
-        raw_chunks = semantic_chunk_text(sentences, threshold=0.7)
-        
-        # Logic: First chunk is summary, next 5 are important points
-        summary = raw_chunks[0] if raw_chunks else "No summary available"
-        important_points = raw_chunks[1:6] if len(raw_chunks) > 1 else raw_chunks
+        raw_chunks = semantic_chunk_text(sentences, threshold=0.7, model=model)
 
-        # 3. Revision Sheet Generation
+        summary = _extract_summary(raw_chunks)
+        important_points = raw_chunks[:5] if len(raw_chunks) > 5 else raw_chunks
+
         revision_sheet = f"# Revision Roadmap\n\n### 🔴 CORE CONCEPTS\n"
         revision_sheet += "\n".join([f"- {p}" for p in important_points[:3]])
         revision_sheet += f"\n\n### 📝 SUMMARY\n{summary}"
@@ -68,57 +62,83 @@ async def process_lecture(req: AIRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Processing Error: {str(e)}")
 
-# --- SYSTEM 2: QUERY ENGINE (FAISS Retrieval for Chat) ---
+def _extract_summary(chunks: list[str]) -> str:
+    """Extract a summary from chunks by joining and taking first few sentences"""
+    import re
+    full_text = " ".join(chunks)
+    sentences = re.split(r'(?<=[.!?])\s+', full_text)
+    return " ".join(sentences[:3]) if len(sentences) >= 3 else full_text
 
 @app.post("/api/index")
-async def index_document(req: AIRequest):
+async def index_document(req: IndexRequest):
     """Pre-processes and indexes document for real-time querying"""
-    global active_index, active_chunks
-    
+    if not req.session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+
     try:
         sentences = [s.strip() for s in req.text.split('.') if len(s.strip()) > 10]
-        raw_chunks = semantic_chunk_text(sentences, threshold=0.7)
+        raw_chunks = semantic_chunk_text(sentences, threshold=0.7, model=model)
         structured = structure_chunks(raw_chunks)
         embedded = generate_embeddings(structured)
-        
-        active_index, _ = build_faiss_index(embedded)
-        active_chunks = embedded
-        return {"status": "Successfully Indexed", "chunks": len(embedded)}
+
+        index, _ = build_faiss_index(embedded)
+        indexes[req.session_id] = {
+            "index": index,
+            "chunks": embedded
+        }
+
+        return {
+            "status": "Successfully Indexed",
+            "chunks": len(embedded),
+            "session_id": req.session_id
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Indexing Error: {str(e)}")
 
 @app.post("/api/query")
 async def query_doc(req: QueryRequest):
     """Answers specific user questions using retrieval"""
-    global active_index, active_chunks
-    
-    if active_index is None:
-        raise HTTPException(status_code=400, detail="Please upload/index a document first")
+    if not req.session_id or req.session_id not in indexes:
+        raise HTTPException(
+            status_code=400,
+            detail="Please upload/index a document first or provide a valid session_id"
+        )
 
     try:
+        import time
+        start = time.perf_counter()
+
+        session = indexes[req.session_id]
         results = retrieve(
             query=req.question,
             model=model,
-            index=active_index,
-            chunks=active_chunks,
+            index=session["index"],
+            chunks=session["chunks"],
             k=req.k
         )
+
+        elapsed_ms = int((time.perf_counter() - start) * 1000)
+
         return {
-        "query": req.question,
-        "top_k": req.k,
-        "results": [
-            {"text": r["text"], "score": r["score"], "rank": i + 1}
-            for i, r in enumerate(results)
-        ],
-        "metadata": {
-            "total_chunks": len(active_chunks),
-            "retrieval_method": "faiss + cross-encoder",
-            "processing_time_ms": 0  # placeholder, could be measured
+            "query": req.question,
+            "session_id": req.session_id,
+            "top_k": req.k,
+            "results": [
+                {"text": r["text"], "score": float(r["score"]), "rank": i + 1}
+                for i, r in enumerate(results)
+            ],
+            "metadata": {
+                "total_chunks": len(session["chunks"]),
+                "retrieval_method": "faiss + cross-encoder",
+                "processing_time_ms": elapsed_ms
+            }
         }
-    }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query Error: {str(e)}")
 
 @app.get("/")
 async def health():
-    return {"status": "DocMind ML Layer Active", "engines": ["Processing", "Retrieval"]}
+    return {
+        "status": "DocMind ML Layer Active",
+        "engines": ["Processing", "Retrieval"]
+    }
