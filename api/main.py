@@ -79,7 +79,7 @@ async def index_document(req: IndexRequest):
         sentences = [s.strip() for s in req.text.split('.') if len(s.strip()) > 10]
         raw_chunks = semantic_chunk_text(sentences, threshold=0.7, model=model)
         structured = structure_chunks(raw_chunks)
-        embedded = generate_embeddings(structured)
+        embedded = generate_embeddings(structured, model=model)
 
         index, _ = build_faiss_index(embedded)
         indexes[req.session_id] = {

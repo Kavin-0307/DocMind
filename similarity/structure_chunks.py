@@ -3,7 +3,7 @@ def structure_chunks(chunks):
     pointer=0
     
     for i,chunk in enumerate(chunks):
-        size=len(chunk)
+        size = len(chunk.split()) if isinstance(chunk, str) else len(chunk)
         start=pointer
         end=pointer+size-1
         if isinstance(chunk, list):
