@@ -103,7 +103,19 @@ async def query_doc(req: QueryRequest):
             chunks=active_chunks,
             k=req.k
         )
-        return {"results": [r["text"] for r in results]}
+        return {
+        "query": req.question,
+        "top_k": req.k,
+        "results": [
+            {"text": r["text"], "score": r["score"], "rank": i + 1}
+            for i, r in enumerate(results)
+        ],
+        "metadata": {
+            "total_chunks": len(active_chunks),
+            "retrieval_method": "faiss + cross-encoder",
+            "processing_time_ms": 0  # placeholder, could be measured
+        }
+    }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query Error: {str(e)}")
 
