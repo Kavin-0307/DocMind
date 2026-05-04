@@ -4,9 +4,11 @@ from typing import List
 from sentence_transformers import SentenceTransformer
 import numpy as np
 import pickle
+from nltk.tokenize import sent_tokenize
 from pathlib import Path
 from datetime import datetime
 import logging
+from  cachetools import LRUCache
 from sklearn.metrics.pairwise import cosine_similarity
 from labeling.label_generator import generate_labels
 logger = logging.getLogger(__name__)
@@ -20,10 +22,9 @@ INDEXES_DIR = Path("./indexes")
 INDEXES_DIR.mkdir(parents=True, exist_ok=True)
 app = FastAPI(title="DocMind AI Engine")
 model = SentenceTransformer("all-MiniLM-L6-v2")
+from cachetools import LRUCache
 
-# Per-session storage instead of global state
-indexes: dict[str, dict] = {}
-
+indexes = LRUCache(maxsize=50)
 class AIRequest(BaseModel):
     text: str
 
@@ -50,7 +51,7 @@ async def process_lecture(req: AIRequest):
     try:
         keywords = extract_keywords(req.text, top_n=8)
 
-        sentences = [s.strip() for s in req.text.split('.') if len(s.strip()) > 5]
+        sentences = [s.strip() for s in sent_tokenize(req.text) if len(s.strip()) > 5]
         raw_chunks = semantic_chunk_text(sentences, threshold=0.7, model=model)
         summary = _extract_summary(raw_chunks, model)
 
@@ -103,7 +104,7 @@ def _select_important_points(sentences: list[str], top_n: int = 5) -> list[str]:
         return sentences
 
     result = generate_labels(sentences)
-    scores = result["scores"]
+    scores = result["scores"].filled(0.0)
 
     top_indices = sorted(
         sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_n]
@@ -117,7 +118,7 @@ async def index_document(req: IndexRequest):
         raise HTTPException(status_code=400, detail="session_id is required")
 
     try:
-        sentences = [s.strip() for s in req.text.split('.') if len(s.strip()) > 10]
+        sentences = [s.strip() for s in sent_tokenize(req.text) if len(s.strip()) > 10]
         raw_chunks = semantic_chunk_text(sentences, threshold=0.7, model=model)
         structured = structure_chunks(raw_chunks)
         embedded = generate_embeddings(structured, model=model)
