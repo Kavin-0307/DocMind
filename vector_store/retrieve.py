@@ -1,7 +1,7 @@
 from vector_store.search import search
 from vector_store.reranker import rerank
 import logging
-logger=logging.getlogger(__name__)
+logger=logging.getLogger(__name__)
 def retrieve(query, model, index, chunks, k=5):
     # Stage 1: FAISS (candidate generation)
     # Cap k_candidates at index.ntotal to avoid faiss.Exception on small documents.
