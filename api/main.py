@@ -3,14 +3,21 @@ from pydantic import BaseModel
 from typing import List
 from sentence_transformers import SentenceTransformer
 import numpy as np
-
+import pickle
+from pathlib import Path
+from datetime import datetime
+import logging
+from sklearn.metrics.pairwise import cosine_similarity
+from labeling.label_generator import generate_labels
+logger = logging.getLogger(__name__)
 from keywords.rake_extractor import extract_keywords
 from chunking.semantic_chunker import semantic_chunk_text
 from vector_store.retrieve import retrieve
 from vector_store.index import build_faiss_index
 from embeddings.generate_embeddings import generate_embeddings
 from similarity.structure_chunks import structure_chunks
-
+INDEXES_DIR = Path("./indexes")
+INDEXES_DIR.mkdir(parents=True, exist_ok=True)
 app = FastAPI(title="DocMind AI Engine")
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
@@ -45,10 +52,15 @@ async def process_lecture(req: AIRequest):
 
         sentences = [s.strip() for s in req.text.split('.') if len(s.strip()) > 5]
         raw_chunks = semantic_chunk_text(sentences, threshold=0.7, model=model)
+        summary = _extract_summary(raw_chunks, model)
 
-        summary = _extract_summary(raw_chunks)
-        important_points = raw_chunks[:5] if len(raw_chunks) > 5 else raw_chunks
+        # split chunks → sentences
+        all_sentences = []
+        for chunk in raw_chunks:
+            sents = [s.strip() for s in chunk.split('.') if len(s.strip()) > 10]
+            all_sentences.extend(sents)
 
+        important_points = _select_important_points(all_sentences, top_n=5)
         revision_sheet = f"# Revision Roadmap\n\n### 🔴 CORE CONCEPTS\n"
         revision_sheet += "\n".join([f"- {p}" for p in important_points[:3]])
         revision_sheet += f"\n\n### 📝 SUMMARY\n{summary}"
@@ -62,13 +74,42 @@ async def process_lecture(req: AIRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Processing Error: {str(e)}")
 
-def _extract_summary(chunks: list[str]) -> str:
-    """Extract a summary from chunks by joining and taking first few sentences"""
-    import re
-    full_text = " ".join(chunks)
-    sentences = re.split(r'(?<=[.!?])\s+', full_text)
-    return " ".join(sentences[:3]) if len(sentences) >= 3 else full_text
+def _extract_summary(chunks: list[str], model, n_sentences: int = 3) -> str:
+    if not chunks:
+        return ""
 
+    import re
+    all_sentences = []
+
+    for chunk in chunks:
+        sentences = re.split(r'(?<=[.!?])\s+', chunk)
+        all_sentences.extend([s.strip() for s in sentences if len(s.strip()) > 10])
+
+    if len(all_sentences) <= n_sentences:
+        return " ".join(all_sentences)
+
+    embeddings = model.encode(all_sentences, convert_to_numpy=True).astype("float32")
+
+    centroid = embeddings.mean(axis=0, keepdims=True)
+    scores = cosine_similarity(embeddings, centroid).flatten()
+
+    top_indices = sorted(np.argsort(scores)[-n_sentences:])
+    return " ".join(all_sentences[i] for i in top_indices)
+def _select_important_points(sentences: list[str], top_n: int = 5) -> list[str]:
+    if not sentences:
+        return []
+
+    if len(sentences) <= top_n:
+        return sentences
+
+    result = generate_labels(sentences)
+    scores = result["scores"]
+
+    top_indices = sorted(
+        sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_n]
+    )
+
+    return [sentences[i] for i in top_indices]
 @app.post("/api/index")
 async def index_document(req: IndexRequest):
     """Pre-processes and indexes document for real-time querying"""
@@ -84,9 +125,12 @@ async def index_document(req: IndexRequest):
         index, _ = build_faiss_index(embedded)
         indexes[req.session_id] = {
             "index": index,
-            "chunks": embedded
-        }
+            "chunks": embedded,
+            "created_at": datetime.now().isoformat()
+}
 
+# SAVE TO DISK
+        save_index(req.session_id, indexes[req.session_id])
         return {
             "status": "Successfully Indexed",
             "chunks": len(embedded),
@@ -135,7 +179,26 @@ async def query_doc(req: QueryRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query Error: {str(e)}")
+@app.on_event("startup")
+async def load_indexes():
+    logger.info("Loading indexes from disk...")
 
+    for file in INDEXES_DIR.glob("*.pkl"):
+        try:
+            with open(file, "rb") as f:
+                session_id = file.stem
+                indexes[session_id] = pickle.load(f)
+                logger.info(f"Loaded index: {session_id}")
+        except Exception as e:
+            logger.error(f"Failed loading {file}: {e}")
+def save_index(session_id: str, data: dict):
+    try:
+        file_path = INDEXES_DIR / f"{session_id}.pkl"
+        with open(file_path, "wb") as f:
+            pickle.dump(data, f)
+        logger.info(f"Saved index: {session_id}")
+    except Exception as e:
+        logger.error(f"Failed saving index {session_id}: {e}")
 @app.get("/")
 async def health():
     return {

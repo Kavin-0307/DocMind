@@ -5,17 +5,7 @@ reranker_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
 
 def rerank(query: str, candidate_chunks: list[dict], top_k: int = 5):
-    """
-    Stage 2: Cross-encoder reranking
-
-    Args:
-        query: user query
-        candidate_chunks: output from FAISS (list of chunk dicts)
-        top_k: number of final results
-
-    Returns:
-        top_k reranked chunks
-    """
+    
 
     # 1. create (query, chunk_text) pairs
     pairs = [(query, chunk["text"]) for chunk in candidate_chunks]

@@ -3,19 +3,7 @@ def structure_chunks(chunks):
     pointer=0
     
     for i,chunk in enumerate(chunks):
-        size = len(chunk.split()) if isinstance(chunk, str) else len(chunk)
-        start=pointer
-        end=pointer+size-1
-        if isinstance(chunk, list):
-            text = " ".join(chunk)
-        else:
-            text = chunk
-        chunk_id=i
-        sentences=chunk
-        text=text
-        start_index=start
-        end_index=end
+        text=" ".join(chunk) if isinstance(chunk,list) else chunk
+        structured.append({"chunk_id":i,"text":text,"start_index":i,"end_index":i})
         
-        structured.append({"chunk_id":chunk_id,"sentences":sentences,"text":text,"start_index":start_index,"end_index":end_index})
-        pointer+=size
     return structured
