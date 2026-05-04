@@ -31,7 +31,7 @@ def generate_labels(sentences):
             L[i,j]=lf(sent)
     scores = np.ma.masked_equal(L, -1).mean(axis=1).filled(0.0)
     return{
-        "label_matrix":L,
+        "label_matrix":L.tolist(),
         "scores":scores
     }
 

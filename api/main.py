@@ -5,7 +5,8 @@ from sentence_transformers import SentenceTransformer
 import numpy as np
 import faiss
 import json
-
+import sys
+from fastapi.responses import JSONResponse
 from nltk.tokenize import sent_tokenize
 from pathlib import Path
 from datetime import datetime
@@ -43,26 +44,43 @@ class QueryRequest(BaseModel):
     question: str
     session_id: str
     k: int = 3
-
+import traceback
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    # This will force the REAL error to print in your terminal
+    print("\n" + "!"*60)
+    print("CRITICAL ERROR DETECTED")
+    traceback.print_exc(file=sys.stdout)
+    print("!"*60 + "\n")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"AI Engine Crash: {str(exc)}"}
+    )
 @app.post("/api/process", response_model=AIResponse)
 async def process_lecture(req: AIRequest):
     if not req.text or len(req.text) < 20:
         raise HTTPException(status_code=400, detail="Text too short for analysis")
 
     try:
+        # 1. Keywords
         keywords = extract_keywords(req.text, top_n=8)
 
+        # 2. Sentences & Chunks
         sentences = [s.strip() for s in sent_tokenize(req.text) if len(s.strip()) > 5]
         raw_chunks = semantic_chunk_text(sentences, threshold=0.7, model=model)
+        
+        # 3. Summary
         summary = _extract_summary(raw_chunks, model)
 
-        # split chunks → sentences
+        # 4. Important Points
         all_sentences = []
         for chunk in raw_chunks:
             sents = [s.strip() for s in chunk.split('.') if len(s.strip()) > 10]
             all_sentences.extend(sents)
 
         important_points = _select_important_points(all_sentences, top_n=5)
+        
+        # 5. Revision Sheet
         revision_sheet = f"# Revision Roadmap\n\n### 🔴 CORE CONCEPTS\n"
         revision_sheet += "\n".join([f"- {p}" for p in important_points[:3]])
         revision_sheet += f"\n\n### 📝 SUMMARY\n{summary}"
@@ -73,9 +91,13 @@ async def process_lecture(req: AIRequest):
             important_points=important_points,
             revision_sheet=revision_sheet
         )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Processing Error: {str(e)}")
 
+    except Exception as e:
+        print("\n" + "!"*20 + " REAL ERROR BELOW " + "!"*20)
+        traceback.print_exc() 
+        print("!"*58 + "\n")
+        # -------------------------------------
+        raise HTTPException(status_code=500, detail=f"AI Engine Crash: {str(e)}")
 def _extract_summary(chunks: list[str], model, n_sentences: int = 3) -> str:
     if not chunks:
         return ""
@@ -105,7 +127,7 @@ def _select_important_points(sentences: list[str], top_n: int = 5) -> list[str]:
         return sentences
 
     result = generate_labels(sentences)
-    scores = result["scores"].filled(0.0)
+    scores = result["scores"]
 
     top_indices = sorted(
         sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_n]
@@ -213,9 +235,12 @@ def save_index(session_id: str, data: dict):
         faiss.write_index(data["index"], str(INDEXES_DIR / f"{session_id}.faiss"))
 
         # save chunks separately
-        with open(INDEXES_DIR / f"{session_id}_chunks.json", "w") as f:
-            json.dump(data["chunks"], f)
-
+        serialisable_chunks=[
+            {k:v for k,v in chunk.items() if k!="embedding"}
+            for chunk in data["chunks"]
+        ]
+        with open(INDEXES_DIR / f"{session_id}_chunks.json","w") as f:
+            json.dump(serialisable_chunks,f)
         logger.info(f"Saved index: {session_id}")
 
     except Exception as e:
