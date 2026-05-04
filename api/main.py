@@ -166,12 +166,16 @@ async def index_document(req: IndexRequest):
 @app.post("/api/query")
 async def query_doc(req: QueryRequest):
     """Answers specific user questions using retrieval"""
-    if not req.session_id or req.session_id not in indexes:
-        raise HTTPException(
-            status_code=400,
-            detail="Please upload/index a document first or provide a valid session_id"
-        )
-
+    
+    # First check: is it in memory?
+    if req.session_id not in indexes:
+        # Second check: can we load from disk?
+        if not try_load_from_disk(req.session_id):
+            raise HTTPException(
+                status_code=400,
+                detail="Please upload/index a document first or provide a valid session_id"
+            )
+    
     try:
         import time
         start = time.perf_counter()
@@ -210,7 +214,6 @@ async def load_indexes():
     for faiss_file in INDEXES_DIR.glob("*.faiss"):
         try:
             session_id = faiss_file.stem
-
             index = faiss.read_index(str(faiss_file))
 
             chunks_file = INDEXES_DIR / f"{session_id}_chunks.json"
@@ -219,10 +222,16 @@ async def load_indexes():
 
             with open(chunks_file) as f:
                 chunks = json.load(f)
+            
+            # ✓ Restore numpy arrays from lists
+            for chunk in chunks:
+                if "embedding" in chunk and isinstance(chunk["embedding"], list):
+                    chunk["embedding"] = np.array(chunk["embedding"], dtype="float32")
 
             indexes[session_id] = {
                 "index": index,
-                "chunks": chunks
+                "chunks": chunks,
+                "created_at": datetime.now().isoformat()
             }
 
             logger.info(f"Loaded index: {session_id}")
@@ -230,24 +239,63 @@ async def load_indexes():
         except Exception as e:
             logger.error(f"Failed loading {faiss_file}: {e}")
 def save_index(session_id: str, data: dict):
+    """Persist FAISS index and chunks to disk."""
     try:
         # save FAISS index
         faiss.write_index(data["index"], str(INDEXES_DIR / f"{session_id}.faiss"))
 
-        # save chunks separately
-        serialisable_chunks=[
-            {k:v for k,v in chunk.items() if k!="embedding"}
-            for chunk in data["chunks"]
-        ]
-        with open(INDEXES_DIR / f"{session_id}_chunks.json","w") as f:
-            json.dump(serialisable_chunks,f)
+        # save chunks WITH embeddings for future use
+        serialisable_chunks = []
+        for chunk in data["chunks"]:
+            serialisable_chunk = dict(chunk)  # Copy all fields
+            # Convert numpy arrays to lists for JSON serialization
+            if "embedding" in serialisable_chunk and isinstance(serialisable_chunk["embedding"], np.ndarray):
+                serialisable_chunk["embedding"] = serialisable_chunk["embedding"].tolist()
+            serialisable_chunks.append(serialisable_chunk)
+        
+        with open(INDEXES_DIR / f"{session_id}_chunks.json", "w") as f:
+            json.dump(serialisable_chunks, f)
+        
         logger.info(f"Saved index: {session_id}")
 
     except Exception as e:
         logger.error(f"Failed saving index {session_id}: {e}")
+        raise RuntimeError(f"Failed to persist index {session_id}: {str(e)}")
 @app.get("/")
 async def health():
     return {
         "status": "DocMind ML Layer Active",
         "engines": ["Processing", "Retrieval"]
     }
+
+def try_load_from_disk(session_id: str) -> bool:
+    """Attempt to load session from disk if evicted from LRU cache."""
+    try:
+        faiss_file = INDEXES_DIR / f"{session_id}.faiss"
+        chunks_file = INDEXES_DIR / f"{session_id}_chunks.json"
+        
+        if not faiss_file.exists() or not chunks_file.exists():
+            return False
+        
+        index = faiss.read_index(str(faiss_file))
+        with open(chunks_file) as f:
+            chunks = json.load(f)
+        
+        # ✓ Restore numpy arrays from lists
+        for chunk in chunks:
+            if "embedding" in chunk and isinstance(chunk["embedding"], list):
+                chunk["embedding"] = np.array(chunk["embedding"], dtype="float32")
+        
+        # Restore to in-memory cache
+        indexes[session_id] = {
+            "index": index,
+            "chunks": chunks,
+            "created_at": datetime.now().isoformat()
+        }
+        
+        logger.info(f"Loaded session {session_id} from disk cache")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed loading {session_id} from disk: {e}")
+        return False
