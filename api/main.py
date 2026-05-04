@@ -127,9 +127,9 @@ async def index_document(req: IndexRequest):
             "index": index,
             "chunks": embedded,
             "created_at": datetime.now().isoformat()
-}
+        }
 
-# SAVE TO DISK
+        # SAVE TO DISK
         save_index(req.session_id, indexes[req.session_id])
         return {
             "status": "Successfully Indexed",

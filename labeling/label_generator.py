@@ -29,7 +29,7 @@ def generate_labels(sentences):
     for j,lf in enumerate (labels):
         for i ,sent in enumerate(sentences):
             L[i,j]=lf(sent)
-    scores=L.mean(axis=1)
+    scores=np.ma.masked_equal(L,-1).mean(axis=1)
     return{
         "label_matrix":L,
         "scores":scores
