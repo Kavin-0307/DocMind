@@ -3,7 +3,9 @@ from pydantic import BaseModel
 from typing import List
 from sentence_transformers import SentenceTransformer
 import numpy as np
-import pickle
+import faiss
+import json
+
 from nltk.tokenize import sent_tokenize
 from pathlib import Path
 from datetime import datetime
@@ -22,7 +24,6 @@ INDEXES_DIR = Path("./indexes")
 INDEXES_DIR.mkdir(parents=True, exist_ok=True)
 app = FastAPI(title="DocMind AI Engine")
 model = SentenceTransformer("all-MiniLM-L6-v2")
-from cachetools import LRUCache
 
 indexes = LRUCache(maxsize=50)
 class AIRequest(BaseModel):
@@ -184,20 +185,39 @@ async def query_doc(req: QueryRequest):
 async def load_indexes():
     logger.info("Loading indexes from disk...")
 
-    for file in INDEXES_DIR.glob("*.pkl"):
+    for faiss_file in INDEXES_DIR.glob("*.faiss"):
         try:
-            with open(file, "rb") as f:
-                session_id = file.stem
-                indexes[session_id] = pickle.load(f)
-                logger.info(f"Loaded index: {session_id}")
+            session_id = faiss_file.stem
+
+            index = faiss.read_index(str(faiss_file))
+
+            chunks_file = INDEXES_DIR / f"{session_id}_chunks.json"
+            if not chunks_file.exists():
+                continue
+
+            with open(chunks_file) as f:
+                chunks = json.load(f)
+
+            indexes[session_id] = {
+                "index": index,
+                "chunks": chunks
+            }
+
+            logger.info(f"Loaded index: {session_id}")
+
         except Exception as e:
-            logger.error(f"Failed loading {file}: {e}")
+            logger.error(f"Failed loading {faiss_file}: {e}")
 def save_index(session_id: str, data: dict):
     try:
-        file_path = INDEXES_DIR / f"{session_id}.pkl"
-        with open(file_path, "wb") as f:
-            pickle.dump(data, f)
+        # save FAISS index
+        faiss.write_index(data["index"], str(INDEXES_DIR / f"{session_id}.faiss"))
+
+        # save chunks separately
+        with open(INDEXES_DIR / f"{session_id}_chunks.json", "w") as f:
+            json.dump(data["chunks"], f)
+
         logger.info(f"Saved index: {session_id}")
+
     except Exception as e:
         logger.error(f"Failed saving index {session_id}: {e}")
 @app.get("/")
