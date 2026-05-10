@@ -23,8 +23,12 @@ from vector_store.retrieve import retrieve
 from vector_store.index import build_faiss_index
 from embeddings.generate_embeddings import generate_embeddings
 from similarity.structure_chunks import structure_chunks
+
 INDEXES_DIR = Path("./indexes")
 INDEXES_DIR.mkdir(parents=True, exist_ok=True)
+indexes = LRUCache(maxsize=50)
+import threading
+indexes_lock = threading.Lock()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: load indexes from disk
@@ -59,7 +63,7 @@ async def lifespan(app: FastAPI):
     yield  # app runs here
     # Shutdown: nothing needed
 
-app = FastAPI(title="DocMind AI Engine")
+app = FastAPI(title="DocMind AI Engine",lifespan=lifespan)
 from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
@@ -70,9 +74,8 @@ app.add_middleware(
 )
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
-indexes = LRUCache(maxsize=50)
-import threading
-indexes_lock = threading.Lock()
+
+
 class AIRequest(BaseModel):
     text: str
 
@@ -201,7 +204,9 @@ async def index_document(req: IndexRequest):
             }
 
         # SAVE TO DISK
-        save_index(req.session_id, indexes[req.session_id])
+        with indexes_lock:
+            session_data=indexes[req.session_id]
+        save_index(req.session_id,session_data)
         return {
             "status": "Successfully Indexed",
             "chunks": len(embedded),
@@ -257,37 +262,7 @@ async def query_doc(req: QueryRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query Error: {str(e)}")
-@app.on_event("startup")
-async def load_indexes():
-    logger.info("Loading indexes from disk...")
 
-    for faiss_file in INDEXES_DIR.glob("*.faiss"):
-        try:
-            session_id = faiss_file.stem
-            index = faiss.read_index(str(faiss_file))
-
-            chunks_file = INDEXES_DIR / f"{session_id}_chunks.json"
-            if not chunks_file.exists():
-                continue
-
-            with open(chunks_file) as f:
-                chunks = json.load(f)
-            
-            # ✓ Restore numpy arrays from lists
-            for chunk in chunks:
-                if "embedding" in chunk and isinstance(chunk["embedding"], list):
-                    chunk["embedding"] = np.array(chunk["embedding"], dtype="float32")
-
-            indexes[session_id] = {
-                "index": index,
-                "chunks": chunks,
-                "created_at": datetime.now().isoformat()
-            }
-
-            logger.info(f"Loaded index: {session_id}")
-
-        except Exception as e:
-            logger.error(f"Failed loading {faiss_file}: {e}")
 def save_index(session_id: str, data: dict):
     """Persist FAISS index and chunks to disk."""
     try:
