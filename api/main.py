@@ -11,6 +11,8 @@ from nltk.tokenize import sent_tokenize
 from pathlib import Path
 from datetime import datetime
 import logging
+from contextlib import asynccontextmanager
+
 from  cachetools import LRUCache
 from sklearn.metrics.pairwise import cosine_similarity
 from labeling.label_generator import generate_labels
@@ -23,10 +25,54 @@ from embeddings.generate_embeddings import generate_embeddings
 from similarity.structure_chunks import structure_chunks
 INDEXES_DIR = Path("./indexes")
 INDEXES_DIR.mkdir(parents=True, exist_ok=True)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: load indexes from disk
+    logger.info("Loading indexes from disk...")
+    for faiss_file in INDEXES_DIR.glob("*.faiss"):
+        try:
+            session_id = faiss_file.stem
+            index = faiss.read_index(str(faiss_file))
+
+            chunks_file = INDEXES_DIR / f"{session_id}_chunks.json"
+            if not chunks_file.exists():
+                continue
+
+            with open(chunks_file) as f:
+                chunks = json.load(f)
+
+            for chunk in chunks:
+                if "embedding" in chunk and isinstance(chunk["embedding"], list):
+                    chunk["embedding"] = np.array(chunk["embedding"], dtype="float32")
+
+            with indexes_lock:
+                indexes[session_id] = {
+                    "index": index,
+                    "chunks": chunks,
+                    "created_at": datetime.now().isoformat()
+                }
+            logger.info(f"Loaded index: {session_id}")
+
+        except Exception as e:
+            logger.error(f"Failed loading {faiss_file}: {e}")
+
+    yield  # app runs here
+    # Shutdown: nothing needed
+
 app = FastAPI(title="DocMind AI Engine")
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:8080", "http://localhost:5173"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
 indexes = LRUCache(maxsize=50)
+import threading
+indexes_lock = threading.Lock()
 class AIRequest(BaseModel):
     text: str
 
@@ -147,11 +193,12 @@ async def index_document(req: IndexRequest):
         embedded = generate_embeddings(structured, model=model)
 
         index, _ = build_faiss_index(embedded)
-        indexes[req.session_id] = {
-            "index": index,
-            "chunks": embedded,
-            "created_at": datetime.now().isoformat()
-        }
+        with indexes_lock:
+            indexes[req.session_id] = {
+                "index": index,
+                "chunks": embedded,
+                "created_at": datetime.now().isoformat()
+            }
 
         # SAVE TO DISK
         save_index(req.session_id, indexes[req.session_id])
@@ -168,8 +215,10 @@ async def query_doc(req: QueryRequest):
     """Answers specific user questions using retrieval"""
     
     # First check: is it in memory?
-    if req.session_id not in indexes:
-        # Second check: can we load from disk?
+    with indexes_lock:
+        in_cache=req.session_id in indexes
+        
+    if not in_cache:
         if not try_load_from_disk(req.session_id):
             raise HTTPException(
                 status_code=400,
@@ -180,7 +229,8 @@ async def query_doc(req: QueryRequest):
         import time
         start = time.perf_counter()
 
-        session = indexes[req.session_id]
+        with indexes_lock:
+            session = indexes[req.session_id]
         results = retrieve(
             query=req.question,
             model=model,
@@ -287,11 +337,12 @@ def try_load_from_disk(session_id: str) -> bool:
                 chunk["embedding"] = np.array(chunk["embedding"], dtype="float32")
         
         # Restore to in-memory cache
-        indexes[session_id] = {
-            "index": index,
-            "chunks": chunks,
-            "created_at": datetime.now().isoformat()
-        }
+        with indexes_lock:
+            indexes[session_id] = {
+                "index": index,
+                "chunks": chunks,
+                "created_at": datetime.now().isoformat()
+            }
         
         logger.info(f"Loaded session {session_id} from disk cache")
         return True

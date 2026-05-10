@@ -9,7 +9,7 @@ def search(query: str, model, index, chunks, k: int):
         if idx != -1 and idx < len(chunks):
             results.append({
                 "text": chunks[idx]["text"] if isinstance(chunks[idx], dict) else chunks[idx],
-                "score": float(score)
+                "score": 1.0/(1.0+float(score))
             })
 
     return results
