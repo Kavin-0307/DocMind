@@ -12,7 +12,8 @@ from pathlib import Path
 from datetime import datetime
 import logging
 from contextlib import asynccontextmanager
-
+from preprocessing.text_processor import clean_text
+from keywords.concept_extractor import extract_concepts
 from  cachetools import LRUCache
 from sklearn.metrics.pairwise import cosine_similarity
 from labeling.label_generator import generate_labels
@@ -23,6 +24,10 @@ from vector_store.retrieve import retrieve
 from vector_store.index import build_faiss_index
 from embeddings.generate_embeddings import generate_embeddings
 from similarity.structure_chunks import structure_chunks
+from notes.note_generator import generate_notes
+from dedup.deduplicator import deduplicate
+
+
 
 INDEXES_DIR = Path("./indexes")
 INDEXES_DIR.mkdir(parents=True, exist_ok=True)
@@ -111,11 +116,13 @@ async def process_lecture(req: AIRequest):
         raise HTTPException(status_code=400, detail="Text too short for analysis")
 
     try:
-        # 1. Keywords
-        keywords = extract_keywords(req.text, top_n=8)
+            
+         # 1. Keywords
+        text = clean_text(req.text)  # Phase 1: clean before anything
 
-        # 2. Sentences & Chunks
-        sentences = [s.strip() for s in sent_tokenize(req.text) if len(s.strip()) > 5]
+        keywords = extract_concepts(text, model=model, top_n=10)
+        sentences = [s.strip() for s in sent_tokenize(text) if ...]
+
         raw_chunks = semantic_chunk_text(sentences, threshold=0.7, model=model)
         
         # 3. Summary
@@ -128,12 +135,9 @@ async def process_lecture(req: AIRequest):
             all_sentences.extend(sents)
 
         important_points = _select_important_points(all_sentences, top_n=5)
-        
+        important_points = deduplicate(important_points, model)
         # 5. Revision Sheet
-        revision_sheet = f"# Revision Roadmap\n\n### 🔴 CORE CONCEPTS\n"
-        revision_sheet += "\n".join([f"- {p}" for p in important_points[:3]])
-        revision_sheet += f"\n\n### 📝 SUMMARY\n{summary}"
-
+        revision_sheet = generate_notes(raw_chunks)
         return AIResponse(
             keywords=keywords,
             summary=summary,
@@ -190,7 +194,8 @@ async def index_document(req: IndexRequest):
         raise HTTPException(status_code=400, detail="session_id is required")
 
     try:
-        sentences = [s.strip() for s in sent_tokenize(req.text) if len(s.strip()) > 10]
+        text=clean_text(req.text)
+        sentences = [s.strip() for s in sent_tokenize(text) if len(s.strip()) > 10]
         raw_chunks = semantic_chunk_text(sentences, threshold=0.7, model=model)
         structured = structure_chunks(raw_chunks)
         embedded = generate_embeddings(structured, model=model)
@@ -244,12 +249,19 @@ async def query_doc(req: QueryRequest):
             k=req.k
         )
 
+        CONFIDENCE_THRESHOLD = 0.25
+        best_score = max((r["score"] for r in results), default=0)
+        found = best_score >= CONFIDENCE_THRESHOLD
+        synthesised_answer = results[0]["text"] if found else "This information is not present in the lecture."
+
         elapsed_ms = int((time.perf_counter() - start) * 1000)
 
         return {
             "query": req.question,
             "session_id": req.session_id,
             "top_k": req.k,
+            "synthesised_answer": synthesised_answer,  # ADD
+            "found": found,                             # ADD
             "results": [
                 {"text": r["text"], "score": float(r["score"]), "rank": i + 1}
                 for i, r in enumerate(results)
@@ -261,7 +273,7 @@ async def query_doc(req: QueryRequest):
             }
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Query Error: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Query Error: {str(e)}")
 
 def save_index(session_id: str, data: dict):
     """Persist FAISS index and chunks to disk."""

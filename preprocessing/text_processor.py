@@ -30,4 +30,45 @@ def process_text(text):
 if __name__=="__main__":
     sample_text="Warehouse often rely on manual process. error prone"
     print(process_text(sample_text))
+
+import re
+
+def clean_text(raw: str) -> str:
+    lines = raw.splitlines()
+    merged, buffer = [], ""
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if buffer:
+                merged.append(buffer); buffer = ""
+            continue
+        # Heading: ALL CAPS or ends with ":" and short
+        is_heading = (stripped == stripped.upper() and len(stripped) > 3) \
+                     or (stripped.endswith(":") and len(stripped) < 60)
+        if is_heading:
+            if buffer: merged.append(buffer); buffer = ""
+            merged.append(stripped); continue
+        # Merge continuation lines (no sentence-ending punctuation)
+        if buffer and not buffer[-1] in ".!?":
+            buffer += " " + stripped
+        else:
+            if buffer: merged.append(buffer)
+            buffer = stripped
+    if buffer: merged.append(buffer)
+
+    # Noise filter: drop tokens that are pure symbols or <= 2 chars
+    _noise = re.compile(r'^\W$|^.{1,2}$')
+    cleaned = []
+    for line in merged:
+        tokens = line.split()
+        tokens = [t for t in tokens if not _noise.match(t)]
+        if tokens:
+            cleaned.append(" ".join(tokens))
+
+    # Normalise whitespace
+    text = "\n".join(cleaned)
+    text = re.sub(r'[ \t]{2,}', ' ', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
   
