@@ -121,7 +121,7 @@ async def process_lecture(req: AIRequest):
         text = clean_text(req.text)  # Phase 1: clean before anything
 
         keywords = extract_concepts(text, model=model, top_n=10)
-        sentences = [s.strip() for s in sent_tokenize(text) if ...]
+        sentences = [s.strip() for s in sent_tokenize(text) if len(s.strip())>10]
 
         raw_chunks = semantic_chunk_text(sentences, threshold=0.7, model=model)
         
@@ -137,7 +137,9 @@ async def process_lecture(req: AIRequest):
         important_points = _select_important_points(all_sentences, top_n=5)
         important_points = deduplicate(important_points, model)
         # 5. Revision Sheet
-        revision_sheet = generate_notes(raw_chunks)
+        full_text = " ".join(raw_chunks)
+        revision_sheet = _generate_revision_sheet(raw_chunks)
+
         return AIResponse(
             keywords=keywords,
             summary=summary,
@@ -151,6 +153,26 @@ async def process_lecture(req: AIRequest):
         print("!"*58 + "\n")
         # -------------------------------------
         raise HTTPException(status_code=500, detail=f"AI Engine Crash: {str(e)}")
+def _generate_revision_sheet(raw_chunks: list[str]) -> str:
+    full_text = " ".join(raw_chunks)
+    windows = []
+    step = 3500
+    size = 4000
+    for i in range(0, len(full_text), step):
+        windows.append(full_text[i:i + size])
+        if i + size >= len(full_text):
+            break
+
+    sections = []
+    for window in windows:
+        section = llm_call(
+            f"Create structured revision notes from this excerpt using ## headings, "
+            f"definitions, key concepts and important points. Be concise:\n\n{window}"
+        )
+        sections.append(section)
+
+    return "\n\n".join(sections)
+'''
 def _extract_summary(chunks: list[str], model, n_sentences: int = 3) -> str:
     if not chunks:
         return ""
@@ -172,6 +194,14 @@ def _extract_summary(chunks: list[str], model, n_sentences: int = 3) -> str:
 
     top_indices = sorted(np.argsort(scores)[-n_sentences:])
     return " ".join(all_sentences[i] for i in top_indices)
+'''
+def _extract_summary(chunks: list[str], model, n_sentences: int = 3) -> str:
+    text = " ".join(chunks)
+    return llm_call(
+        f"Summarize the following lecture notes in 4-5 clear, complete sentences. "
+        f"Do not use bullet points:\n\n{text[:8000]}"
+    )
+'''
 def _select_important_points(sentences: list[str], top_n: int = 5) -> list[str]:
     if not sentences:
         return []
@@ -186,7 +216,20 @@ def _select_important_points(sentences: list[str], top_n: int = 5) -> list[str]:
         sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_n]
     )
 
-    return [sentences[i] for i in top_indices]
+    return [sentences[i] for i in top_indices]'''
+
+
+def _select_important_points(sentences: list[str], top_n: int = 5) -> list[str]:
+    text = " ".join(sentences)
+    result = llm_call(
+        f"Extract exactly 7 most important points from this lecture as a numbered list. "
+        f"Each point should be a complete, clean sentence:\n\n{text[:8000]}"
+    )
+    # Parse numbered list into individual points
+    lines = [l.strip() for l in result.splitlines() if l.strip()]
+    points = [l.lstrip("0123456789.). ") for l in lines if l[0].isdigit()]
+    return points[:7] if points else lines[:7]
+
 @app.post("/api/index")
 async def index_document(req: IndexRequest):
     """Pre-processes and indexes document for real-time querying"""
@@ -337,3 +380,12 @@ def try_load_from_disk(session_id: str) -> bool:
     except Exception as e:
         logger.error(f"Failed loading {session_id} from disk: {e}")
         return False
+import requests
+
+def llm_call(prompt: str) -> str:
+    res = requests.post("http://localhost:11434/api/generate", json={
+        "model": "llama3.2",
+        "prompt": prompt,
+        "stream": False
+    })
+    return res.json()["response"]

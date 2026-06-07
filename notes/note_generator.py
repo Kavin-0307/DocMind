@@ -39,14 +39,14 @@ def generate_notes(chunks: list[str]) -> str:
     md = "# Revision Notes\n\n"
     for t in topics:
         if not any([t["definition"], t["core_idea"],
-                    t["importance"], t["applications"]]):
+                t["importance"], t["applications"]]):
             continue
-        md = f"## {t['topic']}\n\n"
-        if t["definition"]:  md = f"**Definition:** {t['definition']}\n\n"
-        if t["core_idea"]:   md = f"**Core idea:** {t['core_idea']}\n\n"
-        if t["importance"]:  md = f"**Why it matters:** {t['importance']}\n\n"
+        md += f"## {t['topic']}\n\n"           # += not =
+        if t["definition"]:  md += f"**Definition:** {t['definition']}\n\n"
+        if t["core_idea"]:   md += f"**Core idea:** {t['core_idea']}\n\n"
+        if t["importance"]:  md += f"**Why it matters:** {t['importance']}\n\n"
         if t["applications"]:
-            md = "**Applications:**\n"
-            for a in t["applications"]: md = f"- {a}\n"
-            md = "\n"
+            md += "**Applications:**\n"
+            for a in t["applications"]: md += f"- {a}\n"
+            md += "\n"
     return md.strip()

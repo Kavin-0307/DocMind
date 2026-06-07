@@ -22,19 +22,27 @@ def lf_has_length(sentence):
         return 0
 
 def generate_labels(sentences):
-    scores=[]
-    labels=[lf_has_number,lf_has_length,lf_has_keyword]
-    n=len(sentences)
-    L=np.full((n,len(labels)),-1,dtype=int)
-    for j,lf in enumerate (labels):
-        for i ,sent in enumerate(sentences):
-            L[i,j]=lf(sent)
+    scores = []
+    labels = [lf_has_number, lf_has_length, lf_has_keyword]
+    n = len(sentences)
+    L = np.full((n, len(labels)), -1, dtype=int)
+    for j, lf in enumerate(labels):
+        for i, sent in enumerate(sentences):
+            L[i, j] = lf(sent)
     scores = np.ma.masked_equal(L, -1).mean(axis=1).filled(0.0)
-    return{
-        "label_matrix":L.tolist(),
-        "scores":scores
-    }
 
+    _PRIORITY = [
+        re.compile(r'\b(is defined as|refers to|means|is known as)\b', re.I),
+        re.compile(r'\b(works by|operates by|functions by|mechanism)\b', re.I),
+        re.compile(r'\b(compared to|unlike|whereas|in contrast)\b', re.I),
+        re.compile(r'\b(formula|equation|calculated as)\b', re.I),
+        re.compile(r'\b(leads to|causes|as a result|therefore)\b', re.I),
+    ]
+    for i, sent in enumerate(sentences):
+        if any(p.search(sent) for p in _PRIORITY):
+            scores[i] = min(1.0, scores[i] + 0.3)
+
+    return {"label_matrix": L.tolist(), "scores": scores}
 if __name__ == "__main__":
     sentences = [
         "This system improves accuracy by 20%",

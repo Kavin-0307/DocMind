@@ -21,6 +21,11 @@ def extract_concepts(text: str, model, top_n: int = 10) -> list[str]:
         chunk.text.lower()
         for chunk in doc.noun_chunks
         if len(chunk.text.split()) >= 2
+        and len(chunk.text)>10
+        and not chunk.text[0].islower()
+        and "(" not in chunk.text        # ADD — drops broken parenthetical fragments
+        and chunk.text[-1].isalpha()     # ADD — drops fragments ending mid-word
+
     }
 
     # Prefer noun phrase when a keybert result is a substring of it
